@@ -49,6 +49,32 @@ function render(element, container) {
   container.appendChild(dom);
 }
 
+// Concurrency options
+
+let nextUnitOfWork = null;
+
+// Deadline parameter is provided by requestIdleCallback! It let's now when the thread is needed.
+function workloop(deadline) {
+  let shouldYield = false;
+  while (nextUnitOfWork && !shouldYield) {
+    nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
+    shouldYield = deadline.timeRemaining() < 1;
+  }
+
+  // Not exactly sure why this callback is here after each of the runs... I understand this can break the rendering later on.
+  requestIdleCallback(workloop);
+}
+
+// This triggers a workloop when browser is idle! https://developer.mozilla.org/en-US/docs/Web/API/Window/requestIdleCallback
+// React uses different scheduler right now https://github.com/facebook/react/tree/main/packages/scheduler
+requestIdleCallback(workloop);
+
+function performUnitOfWork(nextUnitOfWork) {
+  // TODO
+}
+
+// My main Didact object:
+
 const Didact = {
   createElement,
   render,
