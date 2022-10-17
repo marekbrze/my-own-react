@@ -79,31 +79,10 @@ function updateDom(dom, prevProps, nextProps) {
     });
 }
 
-function commitRoot() {
-  deletions.forEach(commitWork);
-  commitWork(wipRoot.child);
-  currentRoot = wipRoot;
-  wipRoot = null;
-}
-
-// HMM...: I think this is an example of a closure. Envoking function from within a function to work on an object properties
-function commitWork(fiber) {
-  if (!fiber) {
-    return;
-  }
-
-  const domParent = fiber.parent.dom;
-
-  if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
-    domParent.appendChild(fiber.dom);
-  } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
-    updateDom(fiber.dom, fiber.alternate.props, fiber.props);
-  } else if (fiber.effectTag === "DELETION") {
-    domParent.removeChild(fiber.dom);
-  }
-  commitWork(fiber.child);
-  commitWork(fiber.sibling);
-}
+let nextUnitOfWork = null;
+let wipRoot = null;
+let currentRoot = null;
+let deletions = null;
 
 function render(element, container) {
   // Container is set as the first unit of work
@@ -118,32 +97,6 @@ function render(element, container) {
   // INFO: Initial unit of work is a work in progress root
   nextUnitOfWork = wipRoot;
 }
-
-let nextUnitOfWork = null;
-let wipRoot = null;
-let currentRoot = null;
-let deletions = null;
-
-// Deadline parameter is provided by requestIdleCallback! It let's now when the thread is needed.
-function workloop(deadline) {
-  let shouldYield = false;
-  while (nextUnitOfWork && !shouldYield) {
-    nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
-    shouldYield = deadline.timeRemaining() < 1;
-  }
-
-  // INFO: if there are no units of work left and work in progress root exist - add it to the dom
-  if (!nextUnitOfWork && wipRoot) {
-    commitRoot();
-  }
-
-  // Not exactly sure why this callback is here after each of the runs... I understand this can break the rendering later on.
-  requestIdleCallback(workloop);
-}
-
-// This triggers a workloop when browser is idle! https://developer.mozilla.org/en-US/docs/Web/API/Window/requestIdleCallback
-// React uses different scheduler right now https://github.com/facebook/react/tree/main/packages/scheduler
-requestIdleCallback(workloop);
 
 // Concurrency options
 
@@ -233,6 +186,53 @@ function reconcileChildren(wipFiber, elements) {
     index++;
   }
 }
+
+// Deadline parameter is provided by requestIdleCallback! It let's now when the thread is needed.
+function workloop(deadline) {
+  let shouldYield = false;
+  while (nextUnitOfWork && !shouldYield) {
+    nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
+    shouldYield = deadline.timeRemaining() < 1;
+  }
+
+  // INFO: if there are no units of work left and work in progress root exist - add it to the dom
+  if (!nextUnitOfWork && wipRoot) {
+    commitRoot();
+  }
+
+  // Not exactly sure why this callback is here after each of the runs... I understand this can break the rendering later on.
+  requestIdleCallback(workloop);
+}
+
+function commitRoot() {
+  deletions.forEach(commitWork);
+  commitWork(wipRoot.child);
+  currentRoot = wipRoot;
+  wipRoot = null;
+}
+
+// HMM...: I think this is an example of a closure. Envoking function from within a function to work on an object properties
+function commitWork(fiber) {
+  if (!fiber) {
+    return;
+  }
+
+  const domParent = fiber.parent.dom;
+
+  if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
+    domParent.appendChild(fiber.dom);
+  } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
+    updateDom(fiber.dom, fiber.alternate.props, fiber.props);
+  } else if (fiber.effectTag === "DELETION") {
+    domParent.removeChild(fiber.dom);
+  }
+  commitWork(fiber.child);
+  commitWork(fiber.sibling);
+}
+
+// This triggers a workloop when browser is idle! https://developer.mozilla.org/en-US/docs/Web/API/Window/requestIdleCallback
+// React uses different scheduler right now https://github.com/facebook/react/tree/main/packages/scheduler
+requestIdleCallback(workloop);
 
 // My main Didact object:
 
