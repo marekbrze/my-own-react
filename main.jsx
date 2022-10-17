@@ -244,7 +244,7 @@ const Didact = {
 // Element for the rendering:
 
 /** @jsx Didact.createElement */
-const container = document.getElementById("root");
+const container = document.getElementById("app");
 
 const updateValue = (e) => {
   rerender(e.target.value);
