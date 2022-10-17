@@ -33,32 +33,69 @@ function createDom(fiber) {
       ? document.createTextNode("")
       : document.createElement(fiber.type);
 
-  // This is a definition for a filter that will be used in the next step
-  const isProperty = (key) => key !== "children";
-
-  // Any property is added to the dom element. For text nodes it's only nodeValue which equals text.
-  Object.keys(fiber.props)
-    .filter(isProperty)
-    .forEach((name) => (dom[name] = fiber.props[name]));
-
-  // Below is a loop for rendering all the children.
-  // For children the dom element acts like a container
-  // Text node has a set empty Array for the children, so no children render for it.
-  element.props.children.forEach((child) => render(child, dom));
+  updateDom(dom, {}, fiber.props);
 
   return dom;
 }
 
+const isEvent = (key) => key.startsWith("on");
+const isProperty = (key) => key !== "children";
+const isNew = (prev, next) => (key) => prev[key] !== next[key];
+const isGone = (prev, next) => (key) => !(key in next);
+
+function updateDom(dom, prevProps, nextProps) {
+  //Remove old or changed event listeners
+  Object.keys(prevProps)
+    .filter(isEvent)
+    .filter((key) => !(key in nextProps) || isNew(prevProps, nextProps)(key))
+    .forEach((name) => {
+      const eventType = name.toLowerCase().substring(2);
+      dom.removeEventListener(eventType, prevProps[name]);
+    });
+
+  // Remove old properties
+  Object.keys(prevProps)
+    .filter(isProperty)
+    .filter(isGone(prevProps, nextProps))
+    .forEach((name) => {
+      dom[name] = "";
+    });
+
+  // Set new or changed properties
+  Object.keys(nextProps)
+    .filter(isProperty)
+    .filter(isNew(prevProps, nextProps))
+    .forEach((name) => {
+      dom[name] = nextProps[name];
+    });
+
+  // Add event listeners
+  Object.keys(nextProps)
+    .filter(isEvent)
+    .filter(isNew(prevProps, nextProps))
+    .forEach((name) => {
+      const eventType = name.toLowerCase().substring(2);
+      dom.addEventListener(eventType, nextProps[name]);
+    });
+}
+
 let nextUnitOfWork = null;
+let wipRoot = null;
+let currentRoot = null;
+let deletions = null;
 
 function render(element, container) {
   // Container is set as the first unit of work
-  nextUnitOfWork = {
+  wipRoot = {
     dom: container,
     props: {
       children: [element],
     },
+    alternate: currentRoot,
   };
+  deletions = [];
+  // INFO: Initial unit of work is a work in progress root
+  nextUnitOfWork = wipRoot;
 }
 
 // Concurrency options
@@ -69,46 +106,9 @@ function performUnitOfWork(fiber) {
     fiber.dom = createDom(fiber);
   }
 
-  // Parent is set for children loop runs
-  if (fiber.parent) {
-    // Child is added to the parent dom
-    fiber.parent.dom.appendChild(fiber.dom);
-  }
-
   // Here we simply get all the children for looping through them
   const elements = fiber.props.children;
-
-  let index = 0;
-
-  let prevSibling = null;
-
-  while (index < elements.length) {
-    const element = elements[index];
-
-    // Local variable for a new fiber
-    const newFiber = {
-      type: element.type,
-      props: element.props,
-
-      // Here we set parent to the main Fiber in the function
-      parent: fiber,
-
-      // DOM is not generated, so that why we need to do it at the begining of this function
-      dom: null,
-    };
-
-    if (index === 0) {
-      // First child is set
-      fiber.child = newFiber;
-    } else {
-      // it's appended to the first child
-      prevSibling.sibling = newFiber;
-    }
-
-    // we set current newFiber as prevsibling for the next run of the loop where we will append new element as a sibling.
-    prevSibling = newFiber;
-    index++;
-  }
+  reconcileChildren(fiber, elements);
 
   // Here we return element for the next run of the workloop
   if (fiber.child) {
@@ -128,6 +128,65 @@ function performUnitOfWork(fiber) {
   }
 }
 
+function reconcileChildren(wipFiber, elements) {
+  let index = 0;
+  // HMM...: we once again traverse downwards?
+  let oldFiber = wipFiber.alternate && wipFiber.alternate.child;
+  let prevSibling = null;
+
+  while (index < elements.length || oldFiber != null) {
+    const element = elements[index];
+
+    // Local variable for a new fiber
+    let newFiber = null;
+
+    const sameType = oldFiber && element && element.type == oldFiber.type;
+
+    if (sameType) {
+      newFiber = {
+        type: oldFiber.type,
+        props: element.props,
+        dom: oldFiber.dom,
+        parent: wipFiber,
+        alternate: oldFiber,
+        effectTag: "UPDATE",
+      };
+    }
+
+    if (element && !sameType) {
+      newFiber = {
+        type: element.type,
+        props: element.type,
+        dom: null,
+        parent: wipFiber,
+        alternate: null,
+        effectTag: "PLACEMENT",
+      };
+    }
+
+    if (oldFiber && !sameType) {
+      oldFiber.effectTag = "DELETION";
+      deletions.push(oldFiber);
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling;
+    }
+
+    if (index === 0) {
+      // First child is set
+      wipFiber.child = newFiber;
+    } else if (element) {
+      // it's appended to the first child
+      prevSibling.sibling = newFiber;
+    }
+
+    // we set current newFiber as prevsibling for the next run of the loop where we will append new element as a sibling.
+    prevSibling = newFiber;
+    index++;
+  }
+}
+
 // Deadline parameter is provided by requestIdleCallback! It let's now when the thread is needed.
 function workloop(deadline) {
   let shouldYield = false;
@@ -136,8 +195,39 @@ function workloop(deadline) {
     shouldYield = deadline.timeRemaining() < 1;
   }
 
+  // INFO: if there are no units of work left and work in progress root exist - add it to the dom
+  if (!nextUnitOfWork && wipRoot) {
+    commitRoot();
+  }
+
   // Not exactly sure why this callback is here after each of the runs... I understand this can break the rendering later on.
   requestIdleCallback(workloop);
+}
+
+function commitRoot() {
+  deletions.forEach(commitWork);
+  commitWork(wipRoot.child);
+  currentRoot = wipRoot;
+  wipRoot = null;
+}
+
+// HMM...: I think this is an example of a closure. Envoking function from within a function to work on an object properties
+function commitWork(fiber) {
+  if (!fiber) {
+    return;
+  }
+
+  const domParent = fiber.parent.dom;
+
+  if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
+    domParent.appendChild(fiber.dom);
+  } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
+    updateDom(fiber.dom, fiber.alternate.props, fiber.props);
+  } else if (fiber.effectTag === "DELETION") {
+    domParent.removeChild(fiber.dom);
+  }
+  commitWork(fiber.child);
+  commitWork(fiber.sibling);
 }
 
 // This triggers a workloop when browser is idle! https://developer.mozilla.org/en-US/docs/Web/API/Window/requestIdleCallback
@@ -157,10 +247,6 @@ const Didact = {
 const element = (
   <div id="foo">
     <h1>My own React</h1>
-    <a>
-      This is a Paragraph with a <span>span element</span>
-    </a>
-    <b />
   </div>
 );
 
